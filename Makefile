@@ -5,7 +5,7 @@ BUILDDIR=$(shell pwd)/build
 IMPORT_PATH=github.com/Jigsaw-Code/outline-go-tun2socks
 ELECTRON_PATH=$(IMPORT_PATH)/outline/electron
 LDFLAGS='-s -w'
-ANDROID_LDFLAGS='-w' # Don't strip Android debug symbols so we can upload them to crash reporting tools.
+ANDROID_LDFLAGS='-w -extldflags=-Wl,-z,max-page-size=16384' # Don't strip Android debug symbols so we can upload them to crash reporting tools + 16KB page alignment
 TUN2SOCKS_VERSION=v1.16.11
 XGO_LDFLAGS='-s -w -X main.version=$(TUN2SOCKS_VERSION)'
 
@@ -18,7 +18,7 @@ MACOS_ARTIFACT=$(MACOS_BUILDDIR)/Tun2socks.framework
 WINDOWS_BUILDDIR=$(BUILDDIR)/windows
 LINUX_BUILDDIR=$(BUILDDIR)/linux
 
-ANDROID_BUILD_CMD="$(GOBIND) -a -ldflags $(ANDROID_LDFLAGS) -target=android -tags android -work -o $(ANDROID_ARTIFACT)"
+ANDROID_BUILD_CMD=$(GOBIND) -androidapi=21 -a -ldflags $(ANDROID_LDFLAGS) -target=android -tags android -work -o $(ANDROID_ARTIFACT)
 ANDROID_OUTLINE_BUILD_CMD="$(ANDROID_BUILD_CMD) $(IMPORT_PATH)/outline/android $(IMPORT_PATH)/outline/shadowsocks"
 ANDROID_INTRA_BUILD_CMD="$(ANDROID_BUILD_CMD) $(IMPORT_PATH)/intra $(IMPORT_PATH)/intra/android $(IMPORT_PATH)/intra/doh $(IMPORT_PATH)/intra/split $(IMPORT_PATH)/intra/protect"
 IOS_BUILD_CMD="$(GOBIND) -a -ldflags $(LDFLAGS) -bundleid org.outline.tun2socks -target=ios/arm64 -tags ios -o $(IOS_ARTIFACT) $(IMPORT_PATH)/outline/apple $(IMPORT_PATH)/outline/shadowsocks"

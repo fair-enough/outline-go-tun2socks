@@ -12,3 +12,5 @@ require (
 	golang.org/x/net v0.0.0-20201006153459-a7d1128ccaa0
 	golang.org/x/sys v0.0.0-20201007165808-a893ed343c85
 )
+
+replace github.com/Jigsaw-Code/outline-go-tun2socks => ./
