@@ -52,13 +52,13 @@ import (
 // Throws an exception if the TUN file descriptor cannot be opened, or if the tunnel fails to
 // connect.
 func ConnectIntraTunnel(
-	fd int, fakedns string, dohdns doh.Transport, protector protect.Protector, eventListener intra.Listener,
+	fd int, fakedns string, dohdns doh.Transport, protector protect.Protector, eventListener intra.Listener, uidProvider intra.UIDProvider,
 ) (*intra.Tunnel, error) {
 	tun, err := makeTunFile(fd)
 	if err != nil {
 		return nil, err
 	}
-	t, err := intra.NewTunnel(fakedns, dohdns, tun, protector, eventListener)
+	t, err := intra.NewTunnel(fakedns, dohdns, tun, protector, eventListener, uidProvider)
 	if err != nil {
 		return nil, err
 	}

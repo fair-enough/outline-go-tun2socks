@@ -26,6 +26,7 @@ import (
 	"github.com/Jigsaw-Code/outline-go-tun2socks/intra/protect"
 	"github.com/Jigsaw-Code/outline-sdk/network"
 	"github.com/Jigsaw-Code/outline-sdk/transport"
+	"github.com/eycorsican/go-tun2socks/common/log"
 )
 
 type intraPacketProxy struct {
@@ -33,12 +34,14 @@ type intraPacketProxy struct {
 	dns         atomic.Pointer[doh.Transport]
 	proxy       network.PacketProxy
 	listener    UDPListener
+	blocker     *DNSBlocker
+	uidProvider UIDProvider
 }
 
 var _ network.PacketProxy = (*intraPacketProxy)(nil)
 
 func newIntraPacketProxy(
-	fakeDNS netip.AddrPort, dns doh.Transport, protector protect.Protector, listener UDPListener,
+	fakeDNS netip.AddrPort, dns doh.Transport, protector protect.Protector, listener UDPListener, blocker *DNSBlocker, uidProvider UIDProvider,
 ) (*intraPacketProxy, error) {
 	if dns == nil {
 		return nil, errors.New("dns is required")
@@ -58,6 +61,8 @@ func newIntraPacketProxy(
 		fakeDNSAddr: fakeDNS,
 		proxy:       pp,
 		listener:    listener,
+		blocker:     blocker,
+		uidProvider: uidProvider,
 	}
 	dohpp.dns.Store(&dns)
 
@@ -121,6 +126,19 @@ func (req *dohPacketReqSender) WriteTo(p []byte, destination netip.AddrPort) (in
 				req.Close()
 			}
 		}()
+
+		// Check if the originating app's DNS should be blocked
+		if req.proxy.blocker != nil && req.proxy.uidProvider != nil {
+			uid := req.proxy.uidProvider.GetUID(17, "", destination.String())
+			if uid >= 0 && req.proxy.blocker.IsBlocked(uid) {
+				log.Infof("DNSBlocker: blocking UDP DNS query from UID %d", uid)
+				servfail, err := doh.Servfail(p)
+				if err != nil {
+					return 0, fmt.Errorf("failed to construct SERVFAIL: %w", err)
+				}
+				return req.response.writeFrom(servfail, net.UDPAddrFromAddrPort(req.proxy.fakeDNSAddr), false)
+			}
+		}
 
 		resp, err := (*req.proxy.dns.Load()).Query(p)
 		if err != nil {

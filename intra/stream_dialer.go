@@ -27,6 +27,7 @@ import (
 	"github.com/Jigsaw-Code/outline-go-tun2socks/intra/protect"
 	"github.com/Jigsaw-Code/outline-go-tun2socks/intra/split"
 	"github.com/Jigsaw-Code/outline-sdk/transport"
+	"github.com/eycorsican/go-tun2socks/common/log"
 )
 
 type intraStreamDialer struct {
@@ -36,6 +37,8 @@ type intraStreamDialer struct {
 	alwaysSplitHTTPS atomic.Bool
 	listener         TCPListener
 	sniReporter      *tcpSNIReporter
+	blocker          *DNSBlocker
+	uidProvider      UIDProvider
 }
 
 var _ transport.StreamDialer = (*intraStreamDialer)(nil)
@@ -46,6 +49,8 @@ func newIntraStreamDialer(
 	protector protect.Protector,
 	listener TCPListener,
 	sniReporter *tcpSNIReporter,
+	blocker *DNSBlocker,
+	uidProvider UIDProvider,
 ) (*intraStreamDialer, error) {
 	if dns == nil {
 		return nil, errors.New("dns is required")
@@ -56,6 +61,8 @@ func newIntraStreamDialer(
 		dialer:      protect.MakeDialer(protector),
 		listener:    listener,
 		sniReporter: sniReporter,
+		blocker:     blocker,
+		uidProvider: uidProvider,
 	}
 	dohsd.dns.Store(&dns)
 	return dohsd, nil
@@ -69,6 +76,15 @@ func (sd *intraStreamDialer) Dial(ctx context.Context, raddr string) (transport.
 	}
 
 	if isEquivalentAddrPort(dest, sd.fakeDNSAddr) {
+		// Check if the originating app's DNS should be blocked
+		if sd.blocker != nil && sd.uidProvider != nil {
+			uid := sd.uidProvider.GetUID(6, "", raddr)
+			if uid >= 0 && sd.blocker.IsBlocked(uid) {
+				log.Infof("DNSBlocker: blocking TCP DNS connection from UID %d", uid)
+				return nil, errors.New("DNS blocked for this application")
+			}
+		}
+
 		src, dst := net.Pipe()
 		go doh.Accept(*sd.dns.Load(), dst)
 		return newStreamConnFromPipeConns(src, dst)

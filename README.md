@@ -87,3 +87,115 @@ Build with:
 make clean && make intra
 ```
 This will create `build/intra/{tun2socks.aar,tun2socks-sources.jar}`
+
+## Per-App DNS Blocking (Intra / Android)
+
+This fork adds **per-app DNS blocking**, allowing a managing component (e.g. a parental-control or digital-wellbeing app) to selectively block DNS resolution for specific Android applications. When an app is blocked, all its DNS queries — both TCP and UDP — are intercepted inside the tunnel and answered with `SERVFAIL`, effectively preventing the app from reaching the network while leaving all other apps unaffected.
+
+### How It Works
+
+```
+┌──────────────┐
+│  Android App │
+│ (e.g. TikTok)│
+└──────┬───────┘
+       │ DNS query (UDP :53 or TCP :53)
+       ▼
+┌──────────────────────────────────┐
+│         TUN device               │
+└──────────────┬───────────────────┘
+               ▼
+┌──────────────────────────────────┐
+│  intraPacketProxy (UDP)          │
+│  intraStreamDialer (TCP)         │
+│                                  │
+│  1. Is destination the fake DNS? │
+│  2. UIDProvider → get caller UID │
+│  3. DNSBlocker.IsBlocked(uid)?   │
+│     YES → return SERVFAIL / error│
+│     NO  → forward to DoH server │
+└──────────────────────────────────┘
+```
+
+1. **`UIDProvider`** (interface, implemented in Kotlin) — resolves which Android app owns a given network socket and maps package names to UIDs.
+   - `GetUID(protocol, localAddr, remoteAddr)` — returns the UID of the socket owner (uses `ConnectivityManager.getConnectionOwnerUid()`, API 29+).
+   - `GetUIDForPackage(packageName)` — resolves a package name to its UID (uses `PackageManager.getPackageUid()`).
+
+2. **`DNSBlocker`** — a thread-safe, in-memory blocklist keyed by UID.
+   - `SetBlockedApps(apps, provider)` — accepts a **comma-separated** list of package names (e.g. `"com.youtube,com.tiktok"`). Each call **fully replaces** the previous blocklist; apps not in the new list are automatically unblocked. An empty string clears the blocklist entirely.
+   - `IsBlocked(uid)` — O(1) map lookup, called on every DNS packet.
+
+3. **Interception points** — both the TCP stream dialer and the UDP packet proxy check the blocklist before forwarding DNS queries:
+   - **UDP** (`packet_proxy.go`): returns a `SERVFAIL` DNS response via `doh.Servfail()`.
+   - **TCP** (`stream_dialer.go`): returns an error, refusing the connection.
+
+### API
+
+#### Go side
+
+The `Tunnel` type exposes a single method:
+
+```go
+// SetBlockedApps replaces the entire DNS blocklist.
+// apps: comma-separated package names, e.g. "com.youtube,com.tiktok"
+// An empty string unblocks all apps.
+tunnel.SetBlockedApps(apps string)
+```
+
+`ConnectIntraTunnel` now requires a `UIDProvider` parameter:
+
+```go
+func ConnectIntraTunnel(
+    fd int, fakedns string, dohdns doh.Transport,
+    protector protect.Protector, eventListener intra.Listener,
+    uidProvider intra.UIDProvider,       // ← new
+) (*intra.Tunnel, error)
+```
+
+#### Kotlin / Android side
+
+Implement the `UIDProvider` interface and pass it when connecting the tunnel:
+
+```kotlin
+class AppUIDProvider(private val context: Context) : UIDProvider {
+    override fun getUID(protocol: Int, localAddr: String, remoteAddr: String): Int {
+        val cm = context.getSystemService(ConnectivityManager::class.java)
+        // parse localAddr / remoteAddr into InetSocketAddress, then:
+        return cm.getConnectionOwnerUid(protocol, local, remote)
+    }
+
+    override fun getUIDForPackage(packageName: String): Int {
+        return try {
+            context.packageManager.getPackageUid(packageName, 0)
+        } catch (_: PackageManager.NameNotFoundException) {
+            -1
+        }
+    }
+}
+```
+
+Then call `SetBlockedApps` at any time to update the blocklist:
+
+```kotlin
+tunnel.setBlockedApps("com.youtube,com.tiktok")  // block these apps
+tunnel.setBlockedApps("")                         // unblock all
+```
+
+### Key Files
+
+| File | Purpose |
+|---|---|
+| `intra/uidprovider.go` | `UIDProvider` interface definition |
+| `intra/dnsblocker.go` | `DNSBlocker` blocklist manager |
+| `intra/dnsblocker_test.go` | Unit tests (replacement semantics, concurrency, whitespace handling) |
+| `intra/tunnel.go` | `Tunnel.SetBlockedApps()` — public entry point |
+| `intra/stream_dialer.go` | TCP DNS blocking interception |
+| `intra/packet_proxy.go` | UDP DNS blocking interception |
+| `intra/android/tun2socks.go` | `ConnectIntraTunnel` entry point (accepts `UIDProvider`) |
+
+### Design Notes
+
+- **Full replacement semantics** — every `SetBlockedApps` call atomically swaps the entire blocklist; there is no additive/subtractive API. This keeps the contract simple and avoids stale state.
+- **Thread safety** — `DNSBlocker` uses `sync.RWMutex`; reads (`IsBlocked`) take a read lock, writes (`SetBlockedApps`) take a write lock.
+- **Graceful degradation** — if `UIDProvider` or `DNSBlocker` is `nil`, blocking is silently skipped and the tunnel behaves as before.
+- **Unknown packages** — packages that cannot be resolved to a UID are silently skipped (logged at WARN level).

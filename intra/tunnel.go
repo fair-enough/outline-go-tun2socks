@@ -40,10 +40,12 @@ type Listener interface {
 type Tunnel struct {
 	network.IPDevice
 
-	sd  *intraStreamDialer
-	pp  *intraPacketProxy
-	sni *tcpSNIReporter
-	tun io.Closer
+	sd          *intraStreamDialer
+	pp          *intraPacketProxy
+	sni         *tcpSNIReporter
+	tun         io.Closer
+	blocker     *DNSBlocker
+	uidProvider UIDProvider
 }
 
 // NewTunnel creates a connected Intra session.
@@ -59,7 +61,7 @@ type Tunnel struct {
 // `dohdns` is the initial DOH transport.
 // `eventListener` will be notified at the completion of every tunneled socket.
 func NewTunnel(
-	fakedns string, dohdns doh.Transport, tun io.Closer, protector protect.Protector, eventListener Listener,
+	fakedns string, dohdns doh.Transport, tun io.Closer, protector protect.Protector, eventListener Listener, uidProvider UIDProvider,
 ) (t *Tunnel, err error) {
 	if eventListener == nil {
 		return nil, errors.New("eventListener is required")
@@ -74,15 +76,17 @@ func NewTunnel(
 		sni: &tcpSNIReporter{
 			dns: dohdns,
 		},
-		tun: tun,
+		tun:         tun,
+		blocker:     NewDNSBlocker(),
+		uidProvider: uidProvider,
 	}
 
-	t.sd, err = newIntraStreamDialer(fakeDNSAddr.AddrPort(), dohdns, protector, eventListener, t.sni)
+	t.sd, err = newIntraStreamDialer(fakeDNSAddr.AddrPort(), dohdns, protector, eventListener, t.sni, t.blocker, t.uidProvider)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stream dialer: %w", err)
 	}
 
-	t.pp, err = newIntraPacketProxy(fakeDNSAddr.AddrPort(), dohdns, protector, eventListener)
+	t.pp, err = newIntraPacketProxy(fakeDNSAddr.AddrPort(), dohdns, protector, eventListener, t.blocker, t.uidProvider)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create packet proxy: %w", err)
 	}
@@ -120,4 +124,15 @@ func (t *Tunnel) EnableSNIReporter(filename, suffix, country string) error {
 func (t *Tunnel) Disconnect() {
 	t.Close()
 	t.tun.Close()
+}
+
+// SetBlockedApps replaces the entire DNS blocklist with the given apps.
+// apps is a comma-separated list of package names (e.g. "com.youtube,com.tiktok").
+// An empty string unblocks all apps.
+// Only the apps in this call will be blocked; any previously blocked apps not
+// in the new list are automatically unblocked.
+func (t *Tunnel) SetBlockedApps(apps string) {
+	if t.blocker != nil && t.uidProvider != nil {
+		t.blocker.SetBlockedApps(apps, t.uidProvider)
+	}
 }
