@@ -90,6 +90,42 @@ func NewDoHTransport(
 	return doh.NewTransport(url, split, dialer, auth, eventListener)
 }
 
+// NewDoHTransportWithFallback returns a DNSTransport that tries `primaryURL` first,
+// and falls back to `fallbackURL` if the primary fails.
+// `primaryIPs` and `fallbackIPs` are optional comma-separated lists of IP addresses
+// for the respective servers.
+// `protector` is the socket protector to use for all external network activity.
+// `auth` will provide a client certificate if required by TLS servers.
+// `eventListener` will be notified after each DNS query succeeds or fails.
+func NewDoHTransportWithFallback(
+	primaryURL, primaryIPs string,
+	fallbackURL, fallbackIPs string,
+	protector protect.Protector,
+	auth doh.ClientAuth,
+	eventListener intra.Listener,
+) (doh.Transport, error) {
+	splitIPs := func(ips string) []string {
+		if len(ips) == 0 {
+			return []string{}
+		}
+		return strings.Split(ips, ",")
+	}
+
+	dialer := protect.MakeDialer(protector)
+
+	primary, err := doh.NewTransport(primaryURL, splitIPs(primaryIPs), dialer, auth, eventListener)
+	if err != nil {
+		return nil, err
+	}
+
+	fallback, err := doh.NewTransport(fallbackURL, splitIPs(fallbackIPs), dialer, auth, eventListener)
+	if err != nil {
+		return nil, err
+	}
+
+	return doh.NewFallbackTransport(primary, fallback), nil
+}
+
 func copyUntilEOF(dst, src io.ReadWriteCloser) {
 	log.Printf("[debug] start relaying traffic [%s] -> [%s]", src, dst)
 	defer log.Printf("[debug] stop relaying traffic [%s] -> [%s]", src, dst)
