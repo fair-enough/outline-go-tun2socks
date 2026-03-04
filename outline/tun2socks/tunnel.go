@@ -12,20 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package outline
+package tun2socks
 
 import (
 	"errors"
-	"fmt"
 	"io"
+	"net"
 	"time"
 
 	"github.com/eycorsican/go-tun2socks/core"
 	"github.com/eycorsican/go-tun2socks/proxy/dnsfallback"
 
-	oss "github.com/Jigsaw-Code/outline-go-tun2socks/shadowsocks"
+	"github.com/Jigsaw-Code/outline-sdk/transport"
+
+	"github.com/Jigsaw-Code/outline-go-tun2socks/outline/connectivity"
 	"github.com/Jigsaw-Code/outline-go-tun2socks/tunnel"
-	shadowsocks "github.com/Jigsaw-Code/outline-ss-server/client"
 )
 
 // Tunnel represents a tunnel from a TUN device to a server.
@@ -38,17 +39,18 @@ type Tunnel interface {
 	UpdateUDPSupport() bool
 }
 
+// Deprecated: use Tunnel directly.
+type OutlineTunnel = Tunnel
+
 type outlinetunnel struct {
 	tunnel.Tunnel
 	lwipStack    core.LWIPStack
-	host         string
-	port         int
-	password     string
-	cipher       string
+	streamDialer transport.StreamDialer
+	packetDialer transport.PacketListener
 	isUDPEnabled bool // Whether the tunnel supports proxying UDP.
 }
 
-// NewTunnel connects a tunnel to a Shadowsocks proxy server and returns an `outline.Tunnel`.
+// newTunnel connects a tunnel to a Shadowsocks proxy server and returns an `outline.Tunnel`.
 //
 // `host` is the IP or domain of the Shadowsocks proxy.
 // `port` is the port of the Shadowsocks proxy.
@@ -56,30 +58,23 @@ type outlinetunnel struct {
 // `cipher` is the encryption cipher used by the Shadowsocks proxy.
 // `isUDPEnabled` indicates if the Shadowsocks proxy and the network support proxying UDP traffic.
 // `tunWriter` is used to output packets back to the TUN device.  OutlineTunnel.Disconnect() will close `tunWriter`.
-func NewTunnel(host string, port int, password, cipher string, isUDPEnabled bool, tunWriter io.WriteCloser) (Tunnel, error) {
+func newTunnel(streamDialer transport.StreamDialer, packetDialer transport.PacketListener, isUDPEnabled bool, tunWriter io.WriteCloser) (Tunnel, error) {
 	if tunWriter == nil {
 		return nil, errors.New("Must provide a TUN writer")
-	}
-	_, err := shadowsocks.NewClient(host, port, password, cipher)
-	if err != nil {
-		return nil, fmt.Errorf("Invalid Shadowsocks proxy parameters: %v", err.Error())
 	}
 	core.RegisterOutputFn(func(data []byte) (int, error) {
 		return tunWriter.Write(data)
 	})
 	lwipStack := core.NewLWIPStack()
 	base := tunnel.NewTunnel(tunWriter, lwipStack)
-	t := &outlinetunnel{base, lwipStack, host, port, password, cipher, isUDPEnabled}
+	t := &outlinetunnel{base, lwipStack, streamDialer, packetDialer, isUDPEnabled}
 	t.registerConnectionHandlers()
 	return t, nil
 }
 
 func (t *outlinetunnel) UpdateUDPSupport() bool {
-	client, err := shadowsocks.NewClient(t.host, t.port, t.password, t.cipher)
-	if err != nil {
-		return false
-	}
-	isUDPEnabled := oss.CheckUDPConnectivityWithDNS(client, shadowsocks.NewAddr("1.1.1.1:53", "udp")) == nil
+	resolverAddr := &net.UDPAddr{IP: net.ParseIP("1.1.1.1"), Port: 53}
+	isUDPEnabled := connectivity.CheckUDPConnectivityWithDNS(t.packetDialer, resolverAddr) == nil
 	if t.isUDPEnabled != isUDPEnabled {
 		t.isUDPEnabled = isUDPEnabled
 		t.lwipStack.Close() // Close existing connections to avoid using the previous handlers.
@@ -93,10 +88,10 @@ func (t *outlinetunnel) UpdateUDPSupport() bool {
 func (t *outlinetunnel) registerConnectionHandlers() {
 	var udpHandler core.UDPConnHandler
 	if t.isUDPEnabled {
-		udpHandler = oss.NewUDPHandler(t.host, t.port, t.password, t.cipher, 30*time.Second)
+		udpHandler = NewUDPHandler(t.packetDialer, 30*time.Second)
 	} else {
 		udpHandler = dnsfallback.NewUDPHandler()
 	}
-	core.RegisterTCPConnHandler(oss.NewTCPHandler(t.host, t.port, t.password, t.cipher))
+	core.RegisterTCPConnHandler(NewTCPHandler(t.streamDialer))
 	core.RegisterUDPConnHandler(udpHandler)
 }

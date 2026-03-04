@@ -8,14 +8,9 @@ LDFLAGS='-s -w'
 ANDROID_LDFLAGS='-w -extldflags=-Wl,-z,max-page-size=16384' # Don't strip Android debug symbols so we can upload them to crash reporting tools + 16KB page alignment
 TUN2SOCKS_VERSION=v1.16.11
 XGO_LDFLAGS='-s -w -X main.version=$(TUN2SOCKS_VERSION)'
+ELECTRON_PKG=outline/electron
 
-ANDROID_BUILDDIR=$(BUILDDIR)/android
-ANDROID_ARTIFACT=$(ANDROID_BUILDDIR)/tun2socks.aar
-IOS_BUILDDIR=$(BUILDDIR)/ios
-IOS_ARTIFACT=$(IOS_BUILDDIR)/Tun2socks.framework
-MACOS_BUILDDIR=$(BUILDDIR)/macos
-MACOS_ARTIFACT=$(MACOS_BUILDDIR)/Tun2socks.framework
-WINDOWS_BUILDDIR=$(BUILDDIR)/windows
+
 LINUX_BUILDDIR=$(BUILDDIR)/linux
 
 ANDROID_BUILD_CMD=$(GOBIND) -androidapi=21 -a -ldflags $(ANDROID_LDFLAGS) -target=android -tags android -work -o $(ANDROID_ARTIFACT)
@@ -26,32 +21,38 @@ MACOS_BUILD_CMD="./tools/$(GOBIND) -a -ldflags $(LDFLAGS) -bundleid org.outline.
 WINDOWS_BUILD_CMD="$(XGOCMD) -ldflags $(XGO_LDFLAGS) --targets=windows/386 -dest $(WINDOWS_BUILDDIR) $(ELECTRON_PATH)"
 LINUX_BUILD_CMD="$(XGOCMD) -ldflags $(XGO_LDFLAGS) --targets=linux/amd64 -dest $(LINUX_BUILDDIR) $(ELECTRON_PATH)"
 
-define build
-	mkdir -p $(1)
-	eval $(2)
-endef
+$(LINUX_BUILDDIR)/tun2socks: $(XGO)
+	mkdir -p "$(LINUX_BUILDDIR)/$(IMPORT_PATH)"
+	$(XGO) -ldflags $(XGO_LDFLAGS) --targets=linux/amd64 -dest "$(LINUX_BUILDDIR)" -pkg $(ELECTRON_PKG) .
+	mv "$(LINUX_BUILDDIR)/$(IMPORT_PATH)-linux-amd64" "$@"
+	rm -r "$(LINUX_BUILDDIR)/$(IMPORT_HOST)"
 
-.PHONY: android-outline android-intra ios linux macos windows clean
 
-all: android-outline android-intra ios linux macos windows
+WINDOWS_BUILDDIR=$(BUILDDIR)/windows
 
-android-outline:
-	$(call build,$(ANDROID_BUILDDIR),$(ANDROID_OUTLINE_BUILD_CMD))
+windows: $(WINDOWS_BUILDDIR)/tun2socks.exe
 
-android-intra:
-	$(call build,$(ANDROID_BUILDDIR),$(ANDROID_INTRA_BUILD_CMD))
+$(WINDOWS_BUILDDIR)/tun2socks.exe: $(XGO)
+	mkdir -p "$(WINDOWS_BUILDDIR)/$(IMPORT_PATH)"
+	$(XGO) -ldflags $(XGO_LDFLAGS) --targets=windows/386 -dest "$(WINDOWS_BUILDDIR)" -pkg $(ELECTRON_PKG) .
+	mv "$(WINDOWS_BUILDDIR)/$(IMPORT_PATH)-windows-386.exe" "$@"
+	rm -r "$(WINDOWS_BUILDDIR)/$(IMPORT_HOST)"
 
-ios:
-	$(call build,$(IOS_BUILDDIR),$(IOS_BUILD_CMD))
 
-linux:
-	$(call build,$(LINUX_BUILDDIR),$(LINUX_BUILD_CMD))
+$(GOMOBILE): go.mod
+	env GOBIN="$(GOBIN)" go install golang.org/x/mobile/cmd/gomobile
+	env GOBIN="$(GOBIN)" $(GOMOBILE) init
 
-macos:
-	$(call build,$(MACOS_BUILDDIR),$(MACOS_BUILD_CMD))
+$(XGO): go.mod
+	env GOBIN="$(GOBIN)" go install github.com/crazy-max/xgo
 
-windows:
-	$(call build,$(WINDOWS_BUILDDIR),$(WINDOWS_BUILD_CMD))
+go.mod: tools.go
+	go mod tidy
+	touch go.mod
 
 clean:
-	rm -rf $(BUILDDIR)
+	rm -rf "$(BUILDDIR)"
+	go clean
+
+clean-all: clean
+	rm -rf "$(GOBIN)"
