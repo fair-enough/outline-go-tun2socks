@@ -21,3 +21,5 @@ require (
 	golang.org/x/sync v0.3.0 // indirect
 	golang.org/x/tools v0.13.0 // indirect
 )
+
+replace github.com/Jigsaw-Code/outline-go-tun2socks => ./

@@ -1,47 +1,11 @@
-BUILDDIR=$(CURDIR)/build
-GOBIN=$(CURDIR)/bin
-
-GOMOBILE=$(GOBIN)/gomobile
-# Add GOBIN to $PATH so `gomobile` can find `gobind`.
-GOBIND=env PATH="$(GOBIN):$(PATH)" "$(GOMOBILE)" bind
-IMPORT_HOST=github.com
-IMPORT_PATH=$(IMPORT_HOST)/Jigsaw-Code/outline-go-tun2socks
-
-.PHONY: android apple linux windows intra clean clean-all
-
-all: intra android linux apple windows
-
-# Don't strip Android debug symbols so we can upload them to crash reporting tools.
-ANDROID_BUILD_CMD=$(GOBIND) -a -ldflags '-w' -target=android -tags android -work
-
-intra: $(BUILDDIR)/intra/tun2socks.aar
-
-$(BUILDDIR)/intra/tun2socks.aar: $(GOMOBILE)
-	mkdir -p "$(BUILDDIR)/intra"
-	$(ANDROID_BUILD_CMD) -o "$@" $(IMPORT_PATH)/intra $(IMPORT_PATH)/intra/android $(IMPORT_PATH)/intra/doh $(IMPORT_PATH)/intra/split $(IMPORT_PATH)/intra/protect
-
-android: $(BUILDDIR)/android/tun2socks.aar
-
-$(BUILDDIR)/android/tun2socks.aar: $(GOMOBILE)
-	mkdir -p "$(BUILDDIR)/android"
-	$(ANDROID_BUILD_CMD) -o "$@" $(IMPORT_PATH)/outline/tun2socks $(IMPORT_PATH)/outline/shadowsocks
-
-# TODO(fortuna): -s strips symbols and is obsolete. Why are we using it?
-$(BUILDDIR)/ios/Tun2socks.xcframework: $(GOMOBILE)
-  # -iosversion should match what outline-client supports.
-	$(GOBIND) -iosversion=11.0 -target=ios,iossimulator -o $@ -ldflags '-s -w' -bundleid org.outline.tun2socks $(IMPORT_PATH)/outline/tun2socks $(IMPORT_PATH)/outline/shadowsocks
-
-$(BUILDDIR)/macos/Tun2socks.xcframework: $(GOMOBILE)
-  # MACOSX_DEPLOYMENT_TARGET and -iosversion should match what outline-client supports.
-	export MACOSX_DEPLOYMENT_TARGET=10.14; $(GOBIND) -iosversion=13.1 -target=macos,maccatalyst -o $@ -ldflags '-s -w' -bundleid org.outline.tun2socks $(IMPORT_PATH)/outline/tun2socks $(IMPORT_PATH)/outline/shadowsocks
-
-apple: $(BUILDDIR)/apple/Tun2socks.xcframework
-
-$(BUILDDIR)/apple/Tun2socks.xcframework: $(BUILDDIR)/ios/Tun2socks.xcframework $(BUILDDIR)/macos/Tun2socks.xcframework
-	find $^ -name "Tun2socks.framework" -type d | xargs -I {} echo " -framework {} " | \
-		xargs xcrun xcodebuild -create-xcframework -output "$@"
-
-XGO=$(GOBIN)/xgo
+GOMOBILE=gomobile
+GOBIND=$(GOMOBILE) bind
+XGOCMD=xgo
+BUILDDIR=$(shell pwd)/build
+IMPORT_PATH=github.com/Jigsaw-Code/outline-go-tun2socks
+ELECTRON_PATH=$(IMPORT_PATH)/outline/electron
+LDFLAGS='-s -w'
+ANDROID_LDFLAGS='-w -extldflags=-Wl,-z,max-page-size=16384' # Don't strip Android debug symbols so we can upload them to crash reporting tools + 16KB page alignment
 TUN2SOCKS_VERSION=v1.16.11
 XGO_LDFLAGS='-s -w -X main.version=$(TUN2SOCKS_VERSION)'
 ELECTRON_PKG=outline/electron
@@ -49,7 +13,13 @@ ELECTRON_PKG=outline/electron
 
 LINUX_BUILDDIR=$(BUILDDIR)/linux
 
-linux: $(LINUX_BUILDDIR)/tun2socks
+ANDROID_BUILD_CMD=$(GOBIND) -androidapi=21 -a -ldflags $(ANDROID_LDFLAGS) -target=android -tags android -work -o $(ANDROID_ARTIFACT)
+ANDROID_OUTLINE_BUILD_CMD="$(ANDROID_BUILD_CMD) $(IMPORT_PATH)/outline/android $(IMPORT_PATH)/outline/shadowsocks"
+ANDROID_INTRA_BUILD_CMD="$(ANDROID_BUILD_CMD) $(IMPORT_PATH)/intra $(IMPORT_PATH)/intra/android $(IMPORT_PATH)/intra/doh $(IMPORT_PATH)/intra/split $(IMPORT_PATH)/intra/protect"
+IOS_BUILD_CMD="$(GOBIND) -a -ldflags $(LDFLAGS) -bundleid org.outline.tun2socks -target=ios/arm64 -tags ios -o $(IOS_ARTIFACT) $(IMPORT_PATH)/outline/apple $(IMPORT_PATH)/outline/shadowsocks"
+MACOS_BUILD_CMD="./tools/$(GOBIND) -a -ldflags $(LDFLAGS) -bundleid org.outline.tun2socks -target=ios/amd64 -tags ios -o $(MACOS_ARTIFACT) $(IMPORT_PATH)/outline/apple $(IMPORT_PATH)/outline/shadowsocks"
+WINDOWS_BUILD_CMD="$(XGOCMD) -ldflags $(XGO_LDFLAGS) --targets=windows/386 -dest $(WINDOWS_BUILDDIR) $(ELECTRON_PATH)"
+LINUX_BUILD_CMD="$(XGOCMD) -ldflags $(XGO_LDFLAGS) --targets=linux/amd64 -dest $(LINUX_BUILDDIR) $(ELECTRON_PATH)"
 
 $(LINUX_BUILDDIR)/tun2socks: $(XGO)
 	mkdir -p "$(LINUX_BUILDDIR)/$(IMPORT_PATH)"
